@@ -1,7 +1,28 @@
 services:
+  public-proxy:
+    hostname: service-01
+    build:
+      dockerfile: Dockerfile
+      context: ./public-proxy
+      network: host
+    restart: always
+    volumes:
+      - ./public-proxy/.ssh:/root/.ssh:ro
+      - ./public-proxy/runtime/:/runtime:ro
+      - ./public-proxy/site-enabled:/etc/nginx/sites-enabled:rw
+    ports:
+      - "80:80"
+      - "2201:22"
+    command: /runtime/endpoint.sh
+    networks:
+      - proxy-public
+    depends_on:
+      service:
+        condition: service_healthy
+
   bot:
     build:
-      context: .
+      context: ./backend
       network: host
       dockerfile_inline: |
         FROM denoland/deno:alpine
@@ -9,50 +30,48 @@ services:
         ENV TZ Asia/Ho_Chi_Minh
         RUN ln -snf /usr/share/zoneinfo/$$TZ /etc/localtime && echo $$TZ > /etc/timezone
 
-    restart: unless-stopped
-    command: '--allow-all --unstable-net --watch --no-clear-screen /app/main.ts'
+    restart: always
+    command: '--allow-all --unstable-net /app/main.ts'
     working_dir: '/app'
     depends_on:
-      - nginx
+      - public-proxy
     dns:
       - 1.1.1.1
       - 1.0.0.1
       - 8.8.8.8
       - 8.8.4.4
     volumes:
-      - ./flag:/flag:ro
-      - ./bot_config:/bot_config:ro
-      - ./bot-src:/app:ro
-      - ./bot-log:/bot-log:rw
+      - /flags/service-01/flag:/flag:ro
+      - ./backend/bot_config:/bot_config:ro
+      - ./backend/bot-src:/app:ro
+      - ./backend/bot-log:/bot-log:rw
       - bot-secret:/preshared_bot_secret:rw
     networks:
-      - default
+      - app-network
     read_only: true
     extra_hosts:
       - 'host.docker.internal:host-gateway'
+      - 'api-dfcd.khonggianmang.vn:192.168.19.181'
     tmpfs:
       - /tmp:uid=999,gid=999
       - /deno-dir/:uid=999,gid=999 # reset if restarts
   # OK
   php:
     build:
-      context: ./php-src/
+      context: ./backend/php-src/
       network: host
       dockerfile_inline: |
         FROM httpd:2.4.49
         RUN apt update -y && apt install -y libapache2-mod-php
-    # ports:
-    #   - 8003:80
     read_only: true
     networks:
-      - nginx
-      - default
+      - app-network
     volumes:
-      - ./flag:/usr/share/flag-ne:ro # cho các đội ém bug đến cuối round, bug 1
-      - ./php-src:/usr/local/apache2/htdocs/app:ro # vendor dễ fix hoặc ém bug, bug 2
-      - ./php-src/index.php:/usr/local/apache2/htdocs/index.php:ro
-      - ./php-src/httpd.conf:/usr/local/apache2/conf/httpd.conf:ro
-    restart: unless-stopped
+      - /flags/service-01/flag:/usr/share/flag-ne:ro # cho các đội ém bug đến cuối round, bug 1
+      - ./backend/php-src:/usr/local/apache2/htdocs/app:ro # vendor dễ fix hoặc ém bug, bug 2
+      - ./backend/php-src/index.php:/usr/local/apache2/htdocs/index.php:ro
+      - ./backend/php-src/httpd.conf:/usr/local/apache2/conf/httpd.conf:ro
+    restart: always
     tmpfs:
       - /usr/local/apache2/logs:uid=999,gid=999 # cho các đội tạo backdoor, bug 3
       - /tmp:uid=999,gid=999
@@ -61,31 +80,24 @@ services:
 
   # OK
   mathsays:
-    image: denoland/deno
-    # ports:
-    #   - 8002:8000
+    image: denoland/deno:alpine
     networks:
-      - nginx
-      - default
+      - app-network
     read_only: true
     volumes:
-      - ./flag:/flag:ro
-      - ./mathsays-src:/app:ro
+      - /flags/service-01/flag:/flag:ro
+      - ./backend/mathsays-src:/app:ro
     working_dir: /app
-    command: '--allow-all --watch --no-clear-screen /app/main.ts' # dễ khai thác, khó viết tool một chút, bug 4
-    restart: unless-stopped
+    command: '--allow-all /app/main.ts' # dễ khai thác, khó viết tool một chút, bug 4
+    restart: always
     tmpfs:
-      - /deno-dir/:exec,uid=999,gid=999 # reset if restarts
-      - /usr/share/fonts:exec,uid=999,gid=999 # reset if restarts
+      - /deno-dir/:uid=999,gid=999 # reset if restarts
 
   ws:
     image: denoland/deno:alpine
     read_only: true
-    # ports:
-    #   - 8001:8000
     networks:
-      - nginx
-      - default
+      - app-network
     depends_on:
       db:
         # Disable this if you are using an external Postgres database
@@ -94,23 +106,23 @@ services:
       PG_DB_URI: postgres://postgres:${POSTGRES_PASSWORD:-psql-password-here}@/${POSTGRES_DB:-app_db}?host=/var/run/postgresql/
     volumes:
       - db-run:/var/run/postgresql:ro
-      - ./ws-src:/app:ro
+      - ./backend/ws-src:/app:ro
     working_dir: /app
-    command: '--watch --no-clear-screen --allow-net="[::]:8000" --allow-read=/var/run/postgresql/ --allow-write=/var/run/postgresql/.s.PGSQL.5432 --allow-read=/app/ --allow-write=/app/main.ts --allow-env --unstable-cron --no-prompt /app/main.ts' # bug 5
-    restart: unless-stopped
+    command: '--allow-net="[::]:8000" --allow-read=/var/run/postgresql/ --allow-write=/var/run/postgresql/.s.PGSQL.5432 --allow-read=/app/ --allow-write=/app/main.ts --allow-env --unstable-cron --no-prompt /app/main.ts' # bug 5
+    restart: always
     tmpfs:
       - /deno-dir/:uid=999,gid=999 # reset if restarts
 
   # proxy kiêm hasher
-  nginx:
-    restart: unless-stopped
+  service:
+    restart: always
     depends_on:
       - php
       - ws
       - mathsays
       - postgrest
     build:
-      context: .
+      context: ./backend
       network: host
       dockerfile_inline: |
         FROM nginx:alpine
@@ -119,14 +131,16 @@ services:
         RUN ln -snf /usr/share/zoneinfo/$$TZ /etc/localtime && echo $$TZ > /etc/timezone
     cap_add:
       - NET_ADMIN
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
     read_only: true
+    healthcheck:
+      test: ["CMD-SHELL", "curl http://localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     networks:
-      - default
-      - nginx
+      - proxy-public
+      - app-network
     ulimits:
       nproc: 65535
       nofile:
@@ -135,11 +149,11 @@ services:
     sysctls:
       - "net.ipv4.ip_local_port_range=1024 65535"
     volumes:
-      - ./frontend:/html:ro
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./backend/frontend:/html:ro
+      - ./backend/nginx.conf:/etc/nginx/nginx.conf:ro
       - bot-secret:/preshared_bot_secret:rw
-      - ./bot-log:/bot-log:rw
-      - ./njs:/etc/nginx/njs:ro
+      - ./backend/bot-log:/bot-log:rw
+      - ./backend/njs:/etc/nginx/njs:ro
     tmpfs:
       - /var/cache/nginx:uid=999,gid=999
       - /var/run:uid=999,gid=999
@@ -148,15 +162,13 @@ services:
   postgrest:
     read_only: true
     image: postgrest/postgrest:v12.2.3
-    # ports:
-    #   - "3000:3000"
     networks:
-      - nginx
+      - app-network
     depends_on:
       db:
         # Disable this if you are using an external Postgres database
         condition: service_healthy
-    restart: unless-stopped
+    restart: always
     environment:
       PGRST_DB_CHANNEL_ENABLED: true
       PGRST_DB_MAX_ROWS: 100
@@ -176,7 +188,7 @@ services:
   db:
     read_only: true
     build:
-      context: .
+      context: ./backend
       network: host
       dockerfile_inline: |
         FROM postgres:16-alpine
@@ -260,7 +272,7 @@ services:
       # other configs
       - -c
       - log_min_messages=fatal # prevents Realtime polling queries from appearing in logs
-    restart: unless-stopped
+    restart: always
     dns_search: .
     dns:
       - 1.1.1.1
@@ -270,7 +282,7 @@ services:
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     networks:
-      - default
+      - app-network
     environment:
       DB_ANON_ROLE: anon_role
       POSTGRES_HOST: /var/run/postgresql
@@ -280,13 +292,13 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-app_db}
     volumes:
       # Init script
-      - ./init-db:/docker-entrypoint-initdb.d:ro
+      - ./backend/init-db:/docker-entrypoint-initdb.d:ro
       # PGDATA directory is persisted between restarts
       - db-data:/var/lib/postgresql/data:Z
       # Use named volume to persist pgsodium decryption key between restarts
       - db-config:/etc/postgresql-custom:rw
       - db-run:/var/run/postgresql:rw
-      - ./flag:/usr/lib/include/flag_ne:ro
+      - /flags/service-01/flag:/usr/lib/include/flag_ne:ro
 
 volumes:
   db-config:
@@ -295,4 +307,13 @@ volumes:
   bot-secret:
 
 networks:
-  nginx:
+    app-network:
+        ipam:
+            driver: default
+            config:
+                - subnet: 172.30.1.0/26
+    proxy-public:
+        ipam:
+            driver: default
+            config:
+                - subnet: 172.30.1.64/26

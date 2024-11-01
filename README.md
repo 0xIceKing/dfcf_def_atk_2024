@@ -1,7 +1,10 @@
-# How to run
+# Setup
 ```bash
-chmod -R 777 bot-log
 docker compose up -d
+```
+# Check bot logs
+```bash
+docker compose logs -f bot
 ```
 # Cấu trúc đề
 Đề có các dịch vụ sau:
