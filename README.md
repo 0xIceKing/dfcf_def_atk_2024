@@ -1,5 +1,8 @@
 # How to run
-
+```bash
+chmod -R 777 bot-log
+docker compose up -d
+```
 # Cấu trúc đề
 Đề có các dịch vụ sau:
 - `Mathsays`: Sử dụng Deno (javascript) và canvas để tạo hình ảnh cowsays từ text là các công thức toán học
